@@ -589,14 +589,53 @@ public class ReadlinkDetector {
     }
 
     /**
-     * Check if path contains suspicious keywords
+     * 路径里是否出现了可疑关键字。
+     *
+     * <p>为什么不是简单 {@code contains}：关键字表里有两个字母的 {@code "su"}，而
+     * {@code contains} 会在普通英文单词内部命中它。设备实测（com.xff.launch，10/10 次）：
+     *
+     * <pre>
+     *   /dmabuf:VRI[MainActivity]#0(BLAST Consumer)
+     *                              ^^ "con-SU-mer"
+     * </pre>
+     *
+     * 于是<b>每个 App 自己窗口的图形缓冲</b>都被报成可疑 FD，该项在每次启动都亮。
+     * 一个永远亮的检测等于没有信号，还会把真命中淹掉 —— 所以这里应当偏精确。
+     *
+     * <p>规则：<b>长关键字</b>（{@code >= SUSPICIOUS_SUBSTRING_MIN_LEN}）仍然按子串匹配，
+     * 它们足够独特；<b>短关键字</b>必须落在“名字边界”上 —— 路径首尾，或紧邻
+     * {@code / - _ .} 之一。这正好区分了 {@code consumer}（单词内部的字母）与
+     * {@code /system/bin/su}（一个名字）。
+     *
+     * <p>取舍（写明而不是藏起来）：{@code "hide"} 不再命中 {@code hidemyapplist} 内部，
+     * {@code "ksu"} 不再命中 {@code ksud} 内部 —— 二到四个字母的名字嵌在词里，与普通词
+     * 在构造上无法区分，这正是问题本身。它们作为独立路径段出现时照旧命中
+     * （{@code /data/adb/ksu/...}）；而 SU 二进制另有精确路径检查
+     * （{@code checkSuSymlinks} / {@code SYSTEM_SYMLINK_PATHS}），所以没有丢掉任何真正在验证的东西。
      */
+    private static final int SUSPICIOUS_SUBSTRING_MIN_LEN = 5;
+
+    private static boolean suspiciousNameBoundary(char c) {
+        return c == '/' || c == '-' || c == '_' || c == '.';
+    }
+
     private boolean containsSuspicious(String path) {
         if (path == null || path.isEmpty()) return false;
-        String lowerPath = path.toLowerCase();
+        String lowerPath = path.toLowerCase(java.util.Locale.ROOT);
         for (String suspicious : SUSPICIOUS_TARGETS) {
-            if (lowerPath.contains(suspicious)) {
-                return true;
+            if (suspicious == null || suspicious.isEmpty()) continue;
+            if (suspicious.length() >= SUSPICIOUS_SUBSTRING_MIN_LEN) {
+                if (lowerPath.contains(suspicious)) return true;
+                continue;
+            }
+            int pos = lowerPath.indexOf(suspicious);
+            while (pos >= 0) {
+                int end = pos + suspicious.length();
+                boolean leftOk = (pos == 0) || suspiciousNameBoundary(lowerPath.charAt(pos - 1));
+                boolean rightOk = (end >= lowerPath.length())
+                        || suspiciousNameBoundary(lowerPath.charAt(end));
+                if (leftOk && rightOk) return true;
+                pos = lowerPath.indexOf(suspicious, pos + 1);
             }
         }
         return false;

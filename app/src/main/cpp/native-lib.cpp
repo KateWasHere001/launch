@@ -1230,15 +1230,57 @@ static const char* SUSPICIOUS_KEYWORDS[] = {
 };
 static const int SUSPICIOUS_KEYWORDS_COUNT = 18;
 
+/* A keyword matches a path when it names something in that path, not merely when its letters
+ * occur inside a word.
+ *
+ * WHY A PLAIN SUBSTRING SEARCH IS WRONG HERE. The list contains two-letter words -- "su" above
+ * all -- and `path.find("su")` matches them inside ordinary English. Device-measured, EVERY run
+ * (10/10) on com.xff.launch:
+ *
+ *     Suspicious FD found: /proc/self/fd/128 -> /dmabuf:VRI[MainActivity]#0(BLAST Consumer)
+ *                                                                             ^^ "con-SU-mer"
+ *
+ * so every app's own window buffer was reported as a "Suspicious FD", and the check fired on
+ * 100% of launches. A detector that always fires carries no signal, and it also buries the real
+ * hits in noise -- so erring toward precision is the right direction here.
+ *
+ * THE RULE. A LONG keyword (>= SUSPICIOUS_SUBSTRING_MIN_LEN) still matches anywhere: those are
+ * distinctive enough that a substring hit means something. A SHORT one must sit on a NAME
+ * boundary -- start/end of the path, or next to one of '/', '-', '_', '.'. That is exactly the
+ * distinction between `consumer` (letters inside a word) and `/system/bin/su` (a name).
+ *
+ * TRADE-OFF, stated rather than hidden: "hide" no longer matches inside `hidemyapplist`, nor
+ * "ksu" inside `ksud` -- an embedded two-to-four letter name is indistinguishable from an
+ * ordinary word by construction, which is the whole problem. Both are still caught when they
+ * appear as their own component (`/data/adb/ksu/...`, a module dir named `hide...`), and the SU
+ * BINARY has its own exact-path check (checkSuSymlinks / SYSTEM_SYMLINK_PATHS), so no check that
+ * was actually verifying anything was lost. */
+#define SUSPICIOUS_SUBSTRING_MIN_LEN 5
+
+static bool suspicious_name_boundary(char c) {
+    return c == '/' || c == '-' || c == '_' || c == '.';
+}
+
 static bool contains_suspicious(const std::string& path) {
     if (path.empty()) return false;
     std::string lower = path;
     for (char& c : lower) {
-        c = tolower(c);
+        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
     }
     for (int i = 0; i < SUSPICIOUS_KEYWORDS_COUNT; i++) {
-        if (lower.find(SUSPICIOUS_KEYWORDS[i]) != std::string::npos) {
-            return true;
+        const std::string kw = SUSPICIOUS_KEYWORDS[i];
+        if (kw.empty()) continue;
+        if (kw.size() >= SUSPICIOUS_SUBSTRING_MIN_LEN) {
+            if (lower.find(kw) != std::string::npos) return true;
+            continue;
+        }
+        size_t pos = lower.find(kw);
+        while (pos != std::string::npos) {
+            const size_t end = pos + kw.size();
+            const bool left_ok = (pos == 0) || suspicious_name_boundary(lower[pos - 1]);
+            const bool right_ok = (end >= lower.size()) || suspicious_name_boundary(lower[end]);
+            if (left_ok && right_ok) return true;
+            pos = lower.find(kw, pos + 1);
         }
     }
     return false;
