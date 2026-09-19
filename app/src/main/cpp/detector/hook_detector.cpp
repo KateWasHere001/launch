@@ -1370,6 +1370,14 @@ bool HookDetector::checkXposedMemoryStrings() {
     // 那些"HIT 为 0"没有任何意义。
     int scanned = 0;
     int hits = 0;
+    // [XFF] 命中在扫描期间**只记录、不渲染**。原因见循环末尾与渲染处的注释：
+    // 这些报告文本一旦在扫描期间产生，本轮的后续区就会把它读回来。
+    struct HitRec {
+        int nidx;         // kNeedles 下标 —— 避免在扫描期间复制 needle 文本
+        char region[64];  // 区名（不是 needle，复制它不会自命中）
+        unsigned long va; // 命中地址
+    };
+    std::vector<HitRec> recs;
     std::string line;
     std::vector<char> rbuf;
     while (std::getline(maps, line)) {
@@ -1391,7 +1399,8 @@ bool HookDetector::checkXposedMemoryStrings() {
         size_t got = xffPreadRegion(memfd, start, len, rbuf, 64UL * 1024 * 1024);
         if (got == 0) continue;
         scanned++;
-        for (const char* needle : kNeedles) {
+        for (size_t ni = 0; ni < sizeof(kNeedles) / sizeof(kNeedles[0]); ni++) {
+            const char* needle = kNeedles[ni];
             size_t nlen = strlen(needle);
             if (nlen == 0 || nlen > got) continue;
             // [XFF] 命中地址也要打出来:区名([anon]/[anon:scudo:primary])区分不了同名区的多份副本,
@@ -1399,17 +1408,39 @@ bool HookDetector::checkXposedMemoryStrings() {
             // 故 VA = start + (命中位置 - 缓冲首址)。
             const char* hit = (const char*)memmem(rbuf.data(), got, needle, nlen);
             if (hit != nullptr) {
-                unsigned long va = start + (unsigned long)(hit - rbuf.data());
-                char vahex[32];
-                snprintf(vahex, sizeof(vahex), "0x%lx", va);
-                LOGD("Xposed mem-string HIT: %s @ %s va=%s", needle, p.empty() ? "[anon]" : p.c_str(), vahex);
-                s_xposedMemDetails += std::string(needle) + " @ " + (p.empty() ? "[anon]" : p) + " va=" + vahex + "\n";
-                found = true;
-                hits++;
+                // ★ 这里只记录，**不拼字符串、不打日志**。
+                //
+                // 拼出来的报告串（"needle @ 区名 va=0x…"）长度超过 libc++ 的 SSO 阈值，会落在
+                // **堆**上；`+=` 增长时的重新分配还会在堆里留下旧副本。LOGD 的消息则由 liblog
+                // 格式化进**栈**上的定长缓冲。而本函数正是按地址升序遍历 maps 的，匿名区/堆区
+                // 大多排在后面 —— 于是同一轮扫描会读到"自己刚写下的报告"，把真实命中放大成十几条，
+                // 且报出来的地址是报告文本自己的位置，不是框架字符串的位置。
+                //
+                // 实测（com.xff.launch，3/3 轮一致）：把渲染挪到扫描之后，命中 21~22 → 6，剩下的
+                // 全部落在同一个真实区；那个区的地址（0x32b7…）低于所有 scudo 区，"先写后读"在
+                // 顺序上必然发生 —— 这也解释了命中数为什么一直在 11~22 之间飘。
+                HitRec r;
+                r.nidx = (int)ni;
+                snprintf(r.region, sizeof(r.region), "%s", p.empty() ? "[anon]" : p.c_str());
+                r.va = start + (unsigned long)(hit - rbuf.data());
+                recs.push_back(r);
             }
         }
     }
     close(memfd);
+
+    // ★ 扫描结束后才渲染与打日志。此时本轮不会再有别的区被读，这些文本也就不可能被自己读到。
+    // （下一轮 getAllDetections() 仍可能读到本轮的残留 —— 那是任何"报告里带命中内容"的扫描
+    // 都有的性质，不在本轮放大。）
+    for (const auto& r : recs) {
+        const char* needle = kNeedles[r.nidx];
+        char vahex[32];
+        snprintf(vahex, sizeof(vahex), "0x%lx", r.va);
+        LOGD("Xposed mem-string HIT: %s @ %s va=%s", needle, r.region, vahex);
+        s_xposedMemDetails += std::string(needle) + " @ " + r.region + " va=" + vahex + "\n";
+        found = true;
+        hits++;
+    }
     LOGD("[Xposed-mem] scanned %d region(s), %d needle hit(s)", scanned, hits);
     return found;
 }
