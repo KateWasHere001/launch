@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <linux/limits.h>
 #include <fcntl.h>
+#include <cerrno>
 
 // [XFF] 经 /proc/self/mem 的 pread 安全读进程自身内存(读到不可访问页返 -1/EIO,不 SIGSEGV;
 // 而直接指针 memmem 遇到 maps 标 r 但实际 fault 的页会崩)。返回实际读入字节数,块内复用缓冲。
@@ -1351,11 +1352,24 @@ bool HookDetector::checkXposedMemoryStrings() {
         "com.taobao.android.dexposed",             // Dexposed
     };
     std::ifstream maps("/proc/self/maps");
-    if (!maps.is_open()) return false;
+    if (!maps.is_open()) {
+        LOGD("[Xposed-mem] ABORT: /proc/self/maps open failed (errno=%d)", errno);
+        return false;
+    }
     int memfd = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);   // 经 pread 安全读,防野读崩
-    if (memfd < 0) return false;
+    if (memfd < 0) {
+        // 这条早退以前是**静默**的:它和"扫了但没有命中"在日志上完全同形,于是"命中 0 条"根本
+        // 不可信。凡是会让整项检测失效的分支都必须留下痕迹。
+        LOGD("[Xposed-mem] ABORT: /proc/self/mem open failed (errno=%d)", errno);
+        return false;
+    }
     s_xposedMemDetails.clear();
     bool found = false;
+    // [XFF] 对照计数器(与 T2b 的 anonScanned 同理):本扫描只在命中时打日志,于是"0 条命中"和
+    // "根本没跑/没有可读区"在日志上**完全同形**。scanned 记录真正读到内容的区数 —— 它为 0 时
+    // 那些"HIT 为 0"没有任何意义。
+    int scanned = 0;
+    int hits = 0;
     std::string line;
     std::vector<char> rbuf;
     while (std::getline(maps, line)) {
@@ -1376,17 +1390,27 @@ bool HookDetector::checkXposedMemoryStrings() {
         if (len > 128UL * 1024 * 1024) continue;   // 跳过异常大区
         size_t got = xffPreadRegion(memfd, start, len, rbuf, 64UL * 1024 * 1024);
         if (got == 0) continue;
+        scanned++;
         for (const char* needle : kNeedles) {
             size_t nlen = strlen(needle);
             if (nlen == 0 || nlen > got) continue;
-            if (memmem(rbuf.data(), got, needle, nlen) != nullptr) {
-                LOGD("Xposed mem-string HIT: %s @ %s", needle, p.empty() ? "[anon]" : p.c_str());
-                s_xposedMemDetails += std::string(needle) + " @ " + (p.empty() ? "[anon]" : p) + "\n";
+            // [XFF] 命中地址也要打出来:区名([anon]/[anon:scudo:primary])区分不了同名区的多份副本,
+            // 而"这条命中到底落在哪个映射"只有 VA 说得清。xffPreadRegion 自 start 起连续填入,
+            // 故 VA = start + (命中位置 - 缓冲首址)。
+            const char* hit = (const char*)memmem(rbuf.data(), got, needle, nlen);
+            if (hit != nullptr) {
+                unsigned long va = start + (unsigned long)(hit - rbuf.data());
+                char vahex[32];
+                snprintf(vahex, sizeof(vahex), "0x%lx", va);
+                LOGD("Xposed mem-string HIT: %s @ %s va=%s", needle, p.empty() ? "[anon]" : p.c_str(), vahex);
+                s_xposedMemDetails += std::string(needle) + " @ " + (p.empty() ? "[anon]" : p) + " va=" + vahex + "\n";
                 found = true;
+                hits++;
             }
         }
     }
     close(memfd);
+    LOGD("[Xposed-mem] scanned %d region(s), %d needle hit(s)", scanned, hits);
     return found;
 }
 
@@ -1556,6 +1580,9 @@ std::string HookDetector::getModuleInjectionReport(const std::string& hostPkg,
     std::string dline;
     int anonScanned = 0;
     int memfd2 = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);   // 经 pread 安全读,防野读崩
+    // 同一类静默失效:memfd2 < 0 会让下面的 while 一次都不进,anonScanned 恒为 0 —— 与
+    // "确实没有 dalvik-DEX 区" 同形。这条必须显式区分。
+    if (memfd2 < 0) LOGD("[T2b] ABORT: /proc/self/mem open failed (errno=%d)", errno);
     std::vector<char> dbuf;
     while (memfd2 >= 0 && std::getline(ssd, dline)) {
         unsigned long start = 0, end = 0;
@@ -1576,12 +1603,18 @@ std::string HookDetector::getModuleInjectionReport(const std::string& hostPkg,
         for (const char* desc : kFwDescriptors) {
             size_t dl = strlen(desc);
             if (dl > got) continue;
-            if (memmem(dbuf.data(), got, desc, dl) != nullptr) {
+            // [XFF] 同上:带上命中地址。T2b 扫到的区一律叫 [anon:dalvik-DEX data],区名等于没有,
+            // 只有 VA 能定位到具体是哪一块。
+            const char* hit = (const char*)memmem(dbuf.data(), got, desc, dl);
+            if (hit != nullptr) {
                 std::string keyd = std::string("anon:") + desc;
                 if (seen.count(keyd)) break;
                 seen.insert(keyd);
-                report += std::string("ANON_DEX_FW=") + desc + " @ " + p + "\n";
-                LOGD("[T2b] framework dex descriptor in anon memory: %s @ %s", desc, p.c_str());
+                unsigned long va = start + (unsigned long)(hit - dbuf.data());
+                char vahex[32];
+                snprintf(vahex, sizeof(vahex), "0x%lx", va);
+                report += std::string("ANON_DEX_FW=") + desc + " @ " + p + " va=" + vahex + "\n";
+                LOGD("[T2b] framework dex descriptor in anon memory: %s @ %s va=%s", desc, p.c_str(), vahex);
                 break;   // 该区命中一个框架特征即够,不重复
             }
         }
