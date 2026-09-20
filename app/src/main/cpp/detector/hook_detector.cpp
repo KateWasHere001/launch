@@ -1376,6 +1376,7 @@ bool HookDetector::checkXposedMemoryStrings() {
         int nidx;         // kNeedles 下标 —— 避免在扫描期间复制 needle 文本
         char region[64];  // 区名（不是 needle，复制它不会自命中）
         unsigned long va; // 命中地址
+        int verified;     // [XFF-VERIFY] 按 va 复读一次，needle 是否真的在那里
     };
     std::vector<HitRec> recs;
     std::string line;
@@ -1423,6 +1424,18 @@ bool HookDetector::checkXposedMemoryStrings() {
                 r.nidx = (int)ni;
                 snprintf(r.region, sizeof(r.region), "%s", p.empty() ? "[anon]" : p.c_str());
                 r.va = start + (unsigned long)(hit - rbuf.data());
+                // [XFF-VERIFY] 按报出来的 va **立刻复读一次**，看 needle 是不是真的在那个地址上。
+                // 目的：本会话里外部按 va 读、进程内 watcher 读，都读不到这些字节，只有本函数读到
+                // —— 这个矛盾说明要么 va 是错的、要么别处的读法不对。这一行给出无歧义的判据。
+                // 结果只存进记录，**不在扫描期间打日志**（含 needle 的文本会落进栈/堆，被本轮读回来）。
+                {
+                    char vbuf[64] = {0};
+                    if (nlen < sizeof(vbuf)) {
+                        ssize_t vn = pread(memfd, vbuf, nlen, (off_t)r.va);
+                        r.verified = (vn == (ssize_t)nlen) && memcmp(vbuf, needle, nlen) == 0;
+                    } else
+                        r.verified = -1;
+                }
                 recs.push_back(r);
             }
         }
@@ -1436,7 +1449,30 @@ bool HookDetector::checkXposedMemoryStrings() {
         const char* needle = kNeedles[r.nidx];
         char vahex[32];
         snprintf(vahex, sizeof(vahex), "0x%lx", r.va);
-        LOGD("Xposed mem-string HIT: %s @ %s va=%s", needle, r.region, vahex);
+        LOGD("Xposed mem-string HIT: %s @ %s va=%s verified=%d", needle, r.region, vahex,
+             r.verified);
+        // [XFF] 命中点上下文：**扫描结束后**按 va 重新读回来打十六进制。
+        // 为什么不是扫描期间顺手存下来：存下来的上下文里就含 needle 文本，而那会把它写进堆，
+        // 后续被扫到的区又把它读回来 —— 这正是本函数刚刚修掉的自命中。重读一次代价很小。
+        {
+            int fd2 = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
+            if (fd2 >= 0) {
+                char ctx[128];
+                const off_t from = (off_t)r.va - 48;
+                ssize_t n = pread(fd2, ctx, sizeof(ctx), from);
+                if (n > 0) {
+                    char asc[128 + 1];
+                    size_t ao = 0;
+                    for (ssize_t k = 0; k < n && ao < sizeof(asc) - 1; k++) {
+                        unsigned char c = (unsigned char)ctx[k];
+                        asc[ao++] = (c >= 32 && c < 127) ? (char)c : '.';
+                    }
+                    asc[ao] = 0;
+                    LOGD("[XFF-SRC] %s @%s va=%s\n    asc: %s", needle, r.region, vahex, asc);
+                }
+                close(fd2);
+            }
+        }
         s_xposedMemDetails += std::string(needle) + " @ " + r.region + " va=" + vahex + "\n";
         found = true;
         hits++;
