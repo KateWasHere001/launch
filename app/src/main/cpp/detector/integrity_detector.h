@@ -124,7 +124,6 @@ private:
     /**
      * Check PLT/GOT hooks
      */
-    static bool checkPltGotHooks(const std::string& lib_name);
 
     /**
      * Calculate CRC32 of memory region

@@ -153,15 +153,7 @@ Java_com_xff_launch_detector_NativeDetector_checkSuspiciousMountsSyscall(JNIEnv 
     return RootDetector::checkSuspiciousMountsSyscall();
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_xff_launch_detector_NativeDetector_checkMountInfoNative(JNIEnv *env, jobject thiz) {
-    return RootDetector::checkMountInfoNative();
-}
 
-JNIEXPORT jboolean JNICALL
-Java_com_xff_launch_detector_NativeDetector_checkMountInfoSyscall(JNIEnv *env, jobject thiz) {
-    return RootDetector::checkMountInfoSyscall();
-}
 
 // ===================== Hook Detection =====================
 
@@ -1166,10 +1158,6 @@ Java_com_xff_launch_detector_NativeDetector_checkDebuggerSyscall(JNIEnv *env, jo
     return DebugDetector::checkTracerPidSyscall();
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_xff_launch_detector_NativeDetector_checkPtraceNative(JNIEnv *env, jobject thiz) {
-    return DebugDetector::checkPtraceNative();
-}
 
 JNIEXPORT jint JNICALL
 Java_com_xff_launch_detector_NativeDetector_getTracerPid(JNIEnv *env, jobject thiz) {
@@ -2740,80 +2728,7 @@ Java_com_xff_launch_detector_NativeDetector_getCpuAbiSyscall(JNIEnv *env, jobjec
 
 // --- 5. Sensor List ---
 
-JNIEXPORT jstring JNICALL
-Java_com_xff_launch_detector_NativeDetector_getSensorListNative(JNIEnv *env, jobject thiz) {
-    std::string result;
-    // Try /sys/class/sensors/ directory
-    DIR* dir = opendir("/sys/class/sensors");
-    if (dir) {
-        std::vector<std::string> names;
-        struct dirent* entry;
-        while ((entry = readdir(dir)) != nullptr) {
-            if (entry->d_name[0] != '.') {
-                names.push_back(entry->d_name);
-            }
-        }
-        closedir(dir);
-        std::sort(names.begin(), names.end());
-        for (size_t i = 0; i < names.size(); i++) {
-            if (i > 0) result += ",";
-            result += names[i];
-        }
-    }
-    // Fallback: try /sys/bus/iio/devices/ for some devices
-    if (result.empty()) {
-        DIR* dir2 = opendir("/sys/bus/iio/devices");
-        if (dir2) {
-            std::vector<std::string> names;
-            struct dirent* entry;
-            while ((entry = readdir(dir2)) != nullptr) {
-                if (entry->d_name[0] != '.') {
-                    names.push_back(entry->d_name);
-                }
-            }
-            closedir(dir2);
-            std::sort(names.begin(), names.end());
-            for (size_t i = 0; i < names.size(); i++) {
-                if (i > 0) result += ",";
-                result += names[i];
-            }
-        }
-    }
-    return env->NewStringUTF(result.c_str());
-}
 
-JNIEXPORT jstring JNICALL
-Java_com_xff_launch_detector_NativeDetector_getSensorListSyscall(JNIEnv *env, jobject thiz) {
-    std::string result;
-    // Use syscall to open and enumerate /sys/class/sensors/
-    const char* sensorDirs[] = {"/sys/class/sensors", "/sys/bus/iio/devices"};
-    for (const char* dirPath : sensorDirs) {
-        int fd = syscall(__NR_openat, AT_FDCWD, dirPath, O_RDONLY | O_DIRECTORY);
-        if (fd >= 0) {
-            char buf[4096];
-            std::vector<std::string> names;
-            int nread;
-            while ((nread = syscall(__NR_getdents64, fd, buf, sizeof(buf))) > 0) {
-                int offset = 0;
-                while (offset < nread) {
-                    struct linux_dirent64* de = (struct linux_dirent64*)(buf + offset);
-                    if (de->d_name[0] != '.') {
-                        names.push_back(de->d_name);
-                    }
-                    offset += de->d_reclen;
-                }
-            }
-            syscall(__NR_close, fd);
-            std::sort(names.begin(), names.end());
-            for (size_t i = 0; i < names.size(); i++) {
-                if (i > 0) result += ",";
-                result += names[i];
-            }
-            if (!result.empty()) break;
-        }
-    }
-    return env->NewStringUTF(result.c_str());
-}
 
 // --- 6. /proc/self/maps hash ---
 
@@ -3109,15 +3024,7 @@ static std::string read_cmdline(bool use_syscall) {
     return clean;
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_xff_launch_detector_NativeDetector_getCmdlineNative(JNIEnv *env, jobject thiz) {
-    return env->NewStringUTF(read_cmdline(false).c_str());
-}
 
-JNIEXPORT jstring JNICALL
-Java_com_xff_launch_detector_NativeDetector_getCmdlineSyscall(JNIEnv *env, jobject thiz) {
-    return env->NewStringUTF(read_cmdline(true).c_str());
-}
 
 // ===================== Runtime Integrity Indicators =====================
 
@@ -3168,13 +3075,6 @@ static std::string mmap_read_property(const char* prop_name) {
     return "";
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_xff_launch_detector_NativeDetector_getPropertyMmap(JNIEnv *env, jobject thiz, jstring propName) {
-    const char* name = env->GetStringUTFChars(propName, nullptr);
-    std::string val = mmap_read_property(name);
-    env->ReleaseStringUTFChars(propName, name);
-    return env->NewStringUTF(val.c_str());
-}
 
 JNIEXPORT jint JNICALL
 Java_com_xff_launch_detector_NativeDetector_checkPropertyMmapConsistency(JNIEnv *env, jobject thiz) {
@@ -3478,27 +3378,8 @@ static std::string read_urandom_hex(bool use_syscall) {
     return hex;
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_xff_launch_detector_NativeDetector_readUrandomNative(JNIEnv *env, jobject thiz) {
-    return env->NewStringUTF(read_urandom_hex(false).c_str());
-}
 
-JNIEXPORT jstring JNICALL
-Java_com_xff_launch_detector_NativeDetector_readUrandomSyscall(JNIEnv *env, jobject thiz) {
-    return env->NewStringUTF(read_urandom_hex(true).c_str());
-}
 
-JNIEXPORT jboolean JNICALL
-Java_com_xff_launch_detector_NativeDetector_checkUrandomIntegrity(JNIEnv *env, jobject thiz) {
-    std::string r1 = read_urandom_hex(true);
-    std::string r2 = read_urandom_hex(true);
-    std::string r3 = read_urandom_hex(true);
-
-    bool all_zero = (r1 == "00000000000000000000000000000000");
-    bool all_same = (r1 == r2 && r2 == r3);
-
-    return (jboolean)(all_zero || all_same);
-}
 
 // ===================== System Library Integrity Detection =====================
 
@@ -3517,68 +3398,9 @@ Java_com_xff_launch_detector_NativeDetector_checkAndroidRuntimeIntegrity(JNIEnv 
     return IntegrityDetector::checkAndroidRuntimeIntegrity();
 }
 
-// [XFF] 攻坚 ART-redirect:查被沙箱 hook 的方法的 ArtMethod entry_point。
-// 0066 生效 → entry==QuickToInterpreterBridge(在 libart .text 内)、access_flags 原封;
-// 回退到经典 patch → entry 指向 libart 外的 trampoline(memfd/anon)。
-static void xff_dump_method_entries(JNIEnv *env) {
-    uintptr_t la_s = 0, la_e = 0;   // libart r-x 段
-    { std::ifstream m("/proc/self/maps"); std::string ln;
-      while (std::getline(m, ln)) {
-        if (ln.find("r-xp") != std::string::npos && ln.find("libart.so") != std::string::npos) {
-            sscanf(ln.c_str(), "%lx-%lx", &la_s, &la_e); break;
-        } } }
-    struct MT { const char* cls; const char* name; const char* sig; int hooked; } M[] = {
-        {"android/app/ActivityManager", "getMemoryInfo", "(Landroid/app/ActivityManager$MemoryInfo;)V", 1},
-        {"android/location/Location",   "getLatitude",   "()D", 1},
-        {"java/lang/Object",            "hashCode",      "()I", 0},
-    };
-    for (auto &t : M) {
-        jclass c = env->FindClass(t.cls);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); continue; }
-        if (!c) continue;
-        jmethodID mid = env->GetMethodID(c, t.name, t.sig);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); continue; }
-        if (!mid) continue;
-        char *am = (char*)mid;                       // ART: jmethodID == ArtMethod*
-
-        // jmethodID is an opaque handle.  With ART's compact JNI id table enabled it
-        // can be a small encoded value (for example 0xa2f), not an ArtMethod pointer.
-        // Dereferencing such an id caused the startup SIGSEGV seen on MIUI/Android 13.
-        // Only inspect it when the complete byte range is covered by a readable map.
-        uintptr_t amAddr = reinterpret_cast<uintptr_t>(am);
-        bool readable = false;
-        {
-            std::ifstream maps("/proc/self/maps");
-            std::string line;
-            while (std::getline(maps, line)) {
-                unsigned long start = 0, end = 0;
-                char perms[5] = {};
-                if (sscanf(line.c_str(), "%lx-%lx %4s", &start, &end, perms) == 3 &&
-                    perms[0] == 'r' && amAddr >= start && amAddr <= end &&
-                    sizeof(void*) <= end - amAddr && 24 <= end - amAddr - sizeof(void*)) {
-                    readable = true;
-                    break;
-                }
-            }
-        }
-        if (!readable) {
-            __android_log_print(5, "XFF-ART",
-                "%s.%s jmethodID=%p is opaque/encoded; skip raw ArtMethod read",
-                t.cls, t.name, mid);
-            continue;
-        }
-        uint32_t flags = *(uint32_t*)(am + 4);       // access_flags_@+4
-        void *entry = *(void**)(am + 24);            // entry_point_from_quick_@+24 (A16 64bit)
-        bool inLibart = ((uintptr_t)entry >= la_s && (uintptr_t)entry < la_e);
-        __android_log_print(5, "XFF-ART",
-            "%s.%s hooked=%d entry=%p inLibart=%d flags=0x%08x",
-            t.cls, t.name, t.hooked, entry, inLibart ? 1 : 0, flags);
-    }
-}
 
 JNIEXPORT jstring JNICALL
 Java_com_xff_launch_detector_NativeDetector_checkAllSystemLibrariesIntegrity(JNIEnv *env, jobject thiz) {
-    xff_dump_method_entries(env);
     std::string report = IntegrityDetector::getIntegrityReport();
     return env->NewStringUTF(report.c_str());
 }

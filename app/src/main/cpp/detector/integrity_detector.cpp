@@ -916,8 +916,3 @@ std::string IntegrityDetector::getIntegrityReport() {
     return json.str();
 }
 
-bool IntegrityDetector::checkPltGotHooks(const std::string& lib_name) {
-    // TODO: Implement PLT/GOT hook detection
-    // This would parse the ELF PLT/GOT tables and verify they point to expected addresses
-    return false;
-}

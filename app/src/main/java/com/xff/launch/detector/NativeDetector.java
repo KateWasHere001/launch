@@ -33,8 +33,6 @@ public class NativeDetector {
     public native boolean checkSuspiciousMountsNative();
     public native boolean checkSuspiciousMountsSyscall();
 
-    public native boolean checkMountInfoNative();
-    public native boolean checkMountInfoSyscall();
 
     // ===================== Hook Detection =====================
 
@@ -112,7 +110,6 @@ public class NativeDetector {
     public native boolean checkDebuggerNative();
     public native boolean checkDebuggerSyscall();
 
-    public native boolean checkPtraceNative();
 
     public native int getTracerPid();
 
@@ -394,9 +391,7 @@ public class NativeDetector {
     public native String getCpuAbiSyscall();
 
     /** Get sensor list from /sys/class/sensors via native opendir */
-    public native String getSensorListNative();
     /** Get sensor list from /sys/class/sensors via syscall getdents64 */
-    public native String getSensorListSyscall();
 
     /** Get hash of library names from /proc/self/maps via native */
     public native String getMapsHashNative();
@@ -436,9 +431,7 @@ public class NativeDetector {
     public native String getSELinuxFingerprintSyscall();
 
     /** Get process cmdline (package name) via native fopen */
-    public native String getCmdlineNative();
     /** Get process cmdline via syscall */
-    public native String getCmdlineSyscall();
 
     /** Vulkan 硬件指纹: vendorID|deviceID|driverVersion|deviceUUID|driverUUID (deviceUUID 跨重启稳定) */
     public native String getVulkanFingerprintNative();
@@ -463,7 +456,6 @@ public class NativeDetector {
     // ===================== Runtime Integrity Indicators =====================
 
     /** Read system property via direct mmap of build.prop files (bypasses __system_property_get) */
-    public native String getPropertyMmap(String propName);
 
     /**
      * Read system property via direct mmap of /dev/__properties__ binary area.
@@ -489,11 +481,8 @@ public class NativeDetector {
     public native int checkPropertyMmapConsistency();
 
     /** Read 16 bytes from /dev/urandom via native fopen, returns hex string */
-    public native String readUrandomNative();
     /** Read 16 bytes from /dev/urandom via syscall, returns hex string */
-    public native String readUrandomSyscall();
     /** Check if urandom returns all zeros or fixed pattern, returns true if anomaly */
-    public native boolean checkUrandomIntegrity();
 
     // Singleton instance
     private static NativeDetector instance;
